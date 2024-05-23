@@ -63,42 +63,25 @@
             float32_t: svcntw, \
             float64_t: svcntd)()
 #else
-#define DUMP2(out, in1, in2) \
-        case 2: (out)[1] = current_func((in1)[1], (in2)[1]); \
-        case 1: (out)[0] = current_func((in1)[0], (in2)[0]);
-#define DUMP4(out, in1, in2) \
-        case 4: (out)[3] = current_func((in1)[3], (in2)[3]); \
-        case 3: (out)[2] = current_func((in1)[2], (in2)[2]); \
-        DUMP2(out, in1, in2)
-#define DUMP8(out, in1, in2) \
-        case 8: (out)[7] = current_func((in1)[7], (in2)[7]); \
-        case 7: (out)[6] = current_func((in1)[6], (in2)[6]); \
-        case 6: (out)[5] = current_func((in1)[5], (in2)[5]); \
-        case 5: (out)[4] = current_func((in1)[4], (in2)[4]); \
-        DUMP4(out, in1, in2)
-#define DUMP16(out, in1, in2) \
-        case 16: (out)[15] = current_func((in1)[15], (in2)[15]); \
-        case 15: (out)[14] = current_func((in1)[14], (in2)[14]); \
-        case 14: (out)[13] = current_func((in1)[13], (in2)[13]); \
-        case 13: (out)[12] = current_func((in1)[12], (in2)[12]); \
-        case 12: (out)[11] = current_func((in1)[11], (in2)[11]); \
-        case 11: (out)[10] = current_func((in1)[10], (in2)[10]); \
-        case 10: (out)[ 9] = current_func((in1)[ 9], (in2)[ 9]); \
-        case  9: (out)[ 8] = current_func((in1)[ 8], (in2)[ 8]); \
-        DUMP8(out, in1, in2)
-
-#    define neon_loop(how_much, out, in1, in2)   \
-_Generic((*(out)), \
-         int8_t:    __extension__({ switch ((how_much)) { DUMP16(out, in1, in2) }}), \
-         uint8_t:   __extension__({ switch ((how_much)) { DUMP16(out, in1, in2) }}), \
-         int16_t:   __extension__({ switch ((how_much)) { DUMP8(out, in1, in2) }}), \
-         uint16_t:  __extension__({ switch ((how_much)) { DUMP8(out, in1, in2) }}), \
-         int32_t:   __extension__({ switch ((how_much)) { DUMP4(out, in1, in2) }}), \
-         uint32_t:  __extension__({ switch ((how_much)) { DUMP4(out, in1, in2) }}), \
-         int64_t:   __extension__({ switch ((how_much)) { DUMP2(out, in1, in2) }}), \
-         uint64_t:  __extension__({ switch ((how_much)) { DUMP2(out, in1, in2) }}), \
-         float32_t: __extension__({ switch ((how_much)) { DUMP4(out, in1, in2) }}), \
-         float64_t: __extension__({ switch ((how_much)) { DUMP2(out, in1, in2) }}))
+#define neon_finish(left_over, out, in1, in2)                           \
+    switch(left_over) {                                                 \
+            case 16: (out)[15] = current_func((in1)[15], (in2)[15]);    \
+            case 15: (out)[14] = current_func((in1)[14], (in2)[14]);    \
+            case 14: (out)[13] = current_func((in1)[13], (in2)[13]);    \
+            case 13: (out)[12] = current_func((in1)[12], (in2)[12]);    \
+            case 12: (out)[11] = current_func((in1)[11], (in2)[11]);    \
+            case 11: (out)[10] = current_func((in1)[10], (in2)[10]);    \
+            case 10: (out)[ 9] = current_func((in1)[ 9], (in2)[ 9]);    \
+            case  9: (out)[ 8] = current_func((in1)[ 8], (in2)[ 8]);    \
+            case  8: (out)[ 7] = current_func((in1)[ 7], (in2)[ 7]);    \
+            case  7: (out)[ 6] = current_func((in1)[ 6], (in2)[ 6]);    \
+            case  6: (out)[ 5] = current_func((in1)[ 5], (in2)[ 5]);    \
+            case  5: (out)[ 4] = current_func((in1)[ 4], (in2)[ 4]);    \
+            case  4: (out)[ 3] = current_func((in1)[ 3], (in2)[ 3]);    \
+            case  3: (out)[ 2] = current_func((in1)[ 2], (in2)[ 2]);    \
+            case  2: (out)[ 1] = current_func((in1)[ 1], (in2)[ 1]);    \
+            case  1: (out)[ 0] = current_func((in1)[ 0], (in2)[ 0]);    \
+        }
 #endif /* defined(GENERATE_SVE_CODE) */
 
 /*
@@ -129,10 +112,10 @@ _Generic((*(out)), \
             out += type_cnt;                                                                  \
         }                                                                                     \
                                                                                               \
-        if(left_over > 0) {                                                                   \
-            neon_loop(left_over, out, out, in);                                               \
-        }                                                                                     \
+        neon_finish(left_over, out, out, in);                                                 \
     }
+
+
 #elif defined(GENERATE_SVE_CODE)
 #define OP_AARCH64_FUNC(name, type_name, type_size, type_cnt, type, op)           \
     static void OP_CONCAT(ompi_op_aarch64_2buff_##name##_##type##type_size##_t, APPEND) \
@@ -297,9 +280,7 @@ static void OP_CONCAT(ompi_op_aarch64_3buff_##name##_##type##type_size##_t, APPE
         vst1q##_##type_name##type_size(out, vdst);                                        \
         out += type_cnt;                                                                  \
     }                                                                                     \
-    if (left_over > 0) {                                                                  \
-        neon_loop(left_over, out, in1, in2);                                              \
-    }                                                                                     \
+    neon_finish(left_over, out, in1, in2);                                                \
 }
 #elif defined(GENERATE_SVE_CODE)
 #define OP_AARCH64_FUNC_3BUFF(name, type_name, type_size, type_cnt, type, op)             \
