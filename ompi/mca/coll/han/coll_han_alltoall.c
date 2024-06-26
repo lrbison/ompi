@@ -31,7 +31,11 @@
 #include "opal/mca/rcache/rcache.h"
 #include "ompi/mca/osc/base/base.h"
 
-
+#if 1
+#define DEBUG_PRINT(...) do{ fprintf( stdout, __VA_ARGS__ ); } while( false )
+#else
+#define DEBUG_PRINT(...) do{ } while ( false )
+#endif
 
 /* Who is the given ranks partner during the exchange?
    This function will require rounds comm_size-many rounds, and your partner
@@ -332,6 +336,22 @@ start_allgather:
                 /* pack the data directly into local leader's sendbuf */
                 packed_size_tmp = packed_size;
                 rc = opal_convertor_pack(&convertor, &iov, &iov_count, &packed_size_tmp);
+
+                {
+                    char tmpstr[16*4+1];
+                    char leadstr[256];
+                    char *cur = tmpstr;
+                    if (ii_push_data) {
+                        sprintf(leadstr,"push: my([%d]) data to [%d] for remote [%d]",w_rank,jlow+up_rank*low_size,remote_wrank);
+                    } else {
+                        sprintf(leadstr,"pull: from [%d] to me([%d]) for remote [%d]",jlow+up_rank*low_size,w_rank,low_size*up_partner+low_rank);
+                    }
+                    for (int jbyte=0; jbyte<(int)packed_size_tmp && jbyte<16; jbyte++) {
+                        cur += sprintf(cur,"%3d ",((char*)(to_addr))[jbyte]);
+                    }
+                    DEBUG_PRINT("%s: %s\n",leadstr, tmpstr);
+                }
+
                 opal_convertor_cleanup(&convertor);
 
                 if (1 != rc) {
@@ -347,6 +367,24 @@ start_allgather:
                 /* barrier here: leaders know all followers have filled data,
                    and can issue send. */
                 low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
+            }
+
+            {
+                char *sendbuftmp;
+                char tmpstr[16*4+1];
+                char leadstr[256];
+                char *cur = tmpstr;
+                if (use_isend) {
+                    sprintf(leadstr,"isend slot %d: from [%d] to [%d]",jfan_slot,w_rank,first_remote_wrank+low_rank);
+                    sendbuftmp = &send_bounce[send_bytes_per_fan*jfan_slot];
+                } else {
+                    sprintf(leadstr,"send: from [%d] to [%d]",w_rank,first_remote_wrank+low_rank);
+                    sendbuftmp = send_bounce;
+                }
+                for (int jbyte=0; jbyte<(int)send_bytes_per_fan && jbyte<16; jbyte++) {
+                    cur += sprintf(cur,"%3d ",sendbuftmp[jbyte]);
+                }
+                DEBUG_PRINT("%s: %s\n",leadstr, tmpstr);
             }
 
             if (use_isend == 0) {
