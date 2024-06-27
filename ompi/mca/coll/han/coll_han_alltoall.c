@@ -193,6 +193,9 @@ int mca_coll_han_alltoall_using_smsc(
       bounce buffer for this, but it doesn't mean we have to use "push" mode.
     */
     send_needs_bounce |= fanout != 1;
+    if (send_needs_bounce) {
+        fanout = MAX(2, fanout);
+    }
 
     up_rank = w_rank / low_size;
     assert( w_rank % low_size == low_rank );
