@@ -308,6 +308,13 @@ start_allgather:
             assert(first_remote_wrank <= w_size - low_size );
             int jfan_slot = jloop % fanout;
 
+            if (ii_push_data && jloop >= fanout) {
+                opal_atomic_mb();
+                /*  barrier here: followers know all leaders have completed
+                    previous isend for this slot, and may begin overwriting bounce slot. */
+                low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
+            }
+
             /* pack data into each of the leaders' buffers */
             for (int jlow=0; jlow<low_size; jlow++) {
 
@@ -413,12 +420,6 @@ start_allgather:
             int jfan_slot = jloop % fanout;
             ompi_request_wait(&inter_send_reqs[jfan_slot], MPI_STATUS_IGNORE);
             inter_send_reqs[jfan_slot] = MPI_REQUEST_NULL;
-
-            if (ii_push_data) {
-                /*  barrier here: followers know all leaders have completed
-                    isend for this slot, and may begin copying data. */
-                low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
-            }
         }
     }
 
