@@ -31,7 +31,8 @@
 #include "opal/mca/rcache/rcache.h"
 #include "ompi/mca/osc/base/base.h"
 
-#if 1
+#define COLL_HAN_ALLTOALL_DEBUG 0
+#if COLL_HAN_ALLTOALL_DEBUG
 #define DEBUG_PRINT(...) do{ fprintf( stdout, __VA_ARGS__ ); } while( false )
 #else
 #define DEBUG_PRINT(...) do{ } while ( false )
@@ -73,6 +74,8 @@ int mca_coll_han_alltoall_disqualified(
     return han_module->previous_alltoall(sbuf, scount, sdtype, rbuf, rcount, rdtype,
                                             comm, han_module->previous_alltoall_module);
 }
+
+#define SLEEP_HERE {if(w_rank==2) usleep(500);}
 
 int mca_coll_han_alltoall_using_smsc(
         const void *sbuf, size_t scount,
@@ -171,6 +174,8 @@ int mca_coll_han_alltoall_using_smsc(
     opal_convertor_get_packed_size( &convertor, &packed_size );
     opal_convertor_cleanup(&convertor);
 
+    send_needs_bounce = 1;
+
     /*
       Because push-mode needs extra synchronizations, we'd like to avoid it,
       however it might be necessary:
@@ -215,7 +220,7 @@ start_allgather:
             send_bounce = (char*)rbuf + up_rank*send_bytes_per_fan;
         } else {
             if (!send_bounce_is_allocated) {
-                send_bounce = malloc(send_bytes_per_fan * fanout);
+                send_bounce = calloc(send_bytes_per_fan * fanout, 1);
                 send_bounce_is_allocated = true;
             }
         }
@@ -313,6 +318,7 @@ start_allgather:
                 /*  barrier here: followers know all leaders have completed
                     previous isend for this slot, and may begin overwriting bounce slot. */
                 low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
+                SLEEP_HERE;
             }
 
             /* pack data into each of the leaders' buffers */
@@ -347,6 +353,7 @@ start_allgather:
                 packed_size_tmp = packed_size;
                 rc = opal_convertor_pack(&convertor, &iov, &iov_count, &packed_size_tmp);
 
+#if COLL_HAN_ALLTOALL_DEBUG
                 {
                     char tmpstr[16*4+1];
                     char leadstr[256];
@@ -361,6 +368,7 @@ start_allgather:
                     }
                     DEBUG_PRINT("%s: %s\n",leadstr, tmpstr);
                 }
+#endif
 
                 opal_convertor_cleanup(&convertor);
 
@@ -376,9 +384,12 @@ start_allgather:
             if (ii_push_data) {
                 /* barrier here: leaders know all followers have filled data,
                    and can issue send. */
+                opal_atomic_mb();
                 low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
+
             }
 
+#if COLL_HAN_ALLTOALL_DEBUG
             {
                 char *sendbuftmp;
                 char tmpstr[16*4+1];
@@ -396,6 +407,7 @@ start_allgather:
                 }
                 DEBUG_PRINT("%s: %s\n",leadstr, tmpstr);
             }
+#endif
 
             if (use_isend == 0) {
                 MCA_PML_CALL(send
@@ -412,6 +424,7 @@ start_allgather:
                         comm, &inter_send_reqs[jfan_slot]));
             }
         }
+
 
         /* complete previous inter-node send */
         int prev_slot = jloop - fanout;
