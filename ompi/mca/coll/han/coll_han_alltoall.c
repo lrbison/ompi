@@ -75,7 +75,10 @@ int mca_coll_han_alltoall_disqualified(
                                             comm, han_module->previous_alltoall_module);
 }
 
-#define SLEEP_HERE {if(w_rank==2) usleep(500);}
+#define SLEEP_HERE {if(w_rank==0) usleep(50);}
+//#define ANOTHER_BARRIER {opal_atomic_mb(); low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);opal_atomic_mb();}
+#define ANOTHER_BARRIER {opal_atomic_mb(); comm->c_coll->coll_barrier(comm, comm->c_coll->coll_barrier_module);opal_atomic_mb();}
+
 
 int mca_coll_han_alltoall_using_smsc(
         const void *sbuf, size_t scount,
@@ -128,7 +131,7 @@ int mca_coll_han_alltoall_using_smsc(
     int rc, send_needs_bounce, ii_push_data;
     size_t sndsize;
     MPI_Aint sextent, rextent, lb;
-    char *send_bounce;
+    volatile char *send_bounce;
     opal_convertor_t convertor;
     size_t packed_size = 0, packed_size_tmp;
     int use_isend;
@@ -199,7 +202,7 @@ int mca_coll_han_alltoall_using_smsc(
     */
     send_needs_bounce |= fanout != 1;
     if (send_needs_bounce) {
-        fanout = MAX(2, fanout);
+        fanout = MAX(1, fanout);
     }
 
     up_rank = w_rank / low_size;
@@ -207,7 +210,7 @@ int mca_coll_han_alltoall_using_smsc(
     int64_t send_bytes_per_fan = low_size * packed_size;
     inter_send_reqs = malloc(sizeof(*inter_send_reqs) * fanout);
     inter_recv_reqs = malloc(sizeof(*inter_recv_reqs) * up_size );
-    char **low_bufs = malloc(low_size * sizeof(*low_bufs));
+    volatile char **low_bufs = malloc(low_size * sizeof(*low_bufs));
     void **sbuf_map_ctx = malloc(low_size * sizeof(&sbuf_map_ctx));
 
     const int nptrs_gather = 3;
@@ -285,7 +288,7 @@ start_allgather:
        (This is not an in-place algorithm)*/
     int inter_recv_count = 0;
     for (int jround=0; jround<up_size; jround++) {
-            int up_partner = ring_partner(up_rank, jround, up_size);
+            int up_partner = ring_partner_no_skip(up_rank, jround, up_size);
             int first_remote_wrank = up_partner*low_size;
             /* pre-post the receive for remote.  Receive directly into application buffer */
             char *recv_chunk = ((char*)rbuf) + rextent*rcount*first_remote_wrank;
@@ -299,8 +302,26 @@ start_allgather:
     /* outer loop: in typical "fanout=1 case" do 1 iter per rank in the upper comm (ie, 1 per host)*/
     int nloops = up_size + fanout*use_isend;
     for (int jloop=0; jloop<nloops; jloop++) {
+ANOTHER_BARRIER;
 
-        int up_partner = ring_partner(up_rank, jloop, up_size);
+        int up_partner = ring_partner_no_skip(up_rank, jloop, up_size);
+
+        /* complete previous inter-node send */
+        int prev_slot = jloop - fanout;
+        if (use_isend && prev_slot > 0 ) {
+            /* we cannot fill for our next send until the previous send using this buffer is completed. */
+            int jfan_slot = jloop % fanout;
+            ompi_request_wait(&inter_send_reqs[jfan_slot], MPI_STATUS_IGNORE);
+ANOTHER_BARRIER;
+            // if (ii_push_data && jloop < up_size) {
+                // opal_atomic_mb();
+                // /*  barrier here: followers know all leaders have completed
+                //     previous isend for this slot, and may begin overwriting bounce slot. */
+                // low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
+                // SLEEP_HERE;
+            // }
+        }
+ANOTHER_BARRIER;
 
         if (jloop < up_size) {
             /* For this upper-comm partner, we must provide our data to all the leaders. */
@@ -312,14 +333,6 @@ start_allgather:
             assert(up_partner < up_size);
             assert(first_remote_wrank <= w_size - low_size );
             int jfan_slot = jloop % fanout;
-
-            if (ii_push_data && jloop >= fanout) {
-                opal_atomic_mb();
-                /*  barrier here: followers know all leaders have completed
-                    previous isend for this slot, and may begin overwriting bounce slot. */
-                low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
-                SLEEP_HERE;
-            }
 
             /* pack data into each of the leaders' buffers */
             for (int jlow=0; jlow<low_size; jlow++) {
@@ -352,6 +365,7 @@ start_allgather:
                 /* pack the data directly into local leader's sendbuf */
                 packed_size_tmp = packed_size;
                 rc = opal_convertor_pack(&convertor, &iov, &iov_count, &packed_size_tmp);
+ANOTHER_BARRIER;
 
 #if COLL_HAN_ALLTOALL_DEBUG
                 {
@@ -379,14 +393,15 @@ start_allgather:
                     goto cleanup;
                 }
                 rc = MPI_SUCCESS;
-            }
+            } /* end of packing loop over jlow */
+ANOTHER_BARRIER;
 
             if (ii_push_data) {
                 /* barrier here: leaders know all followers have filled data,
                    and can issue send. */
                 opal_atomic_mb();
                 low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
-
+                SLEEP_HERE;
             }
 
 #if COLL_HAN_ALLTOALL_DEBUG
@@ -408,6 +423,7 @@ start_allgather:
                 DEBUG_PRINT("%s: %s\n",leadstr, tmpstr);
             }
 #endif
+ANOTHER_BARRIER;
 
             if (use_isend == 0) {
                 MCA_PML_CALL(send
@@ -416,6 +432,7 @@ start_allgather:
                         MCA_COLL_BASE_TAG_ALLTOALL, MCA_PML_BASE_SEND_STANDARD,
                         comm) );
             } else {
+                low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
                 /* send the data to our remote partner */
                 MCA_PML_CALL(isend
                         (&send_bounce[send_bytes_per_fan*jfan_slot],
@@ -423,21 +440,15 @@ start_allgather:
                         MCA_COLL_BASE_TAG_ALLTOALL, MCA_PML_BASE_SEND_STANDARD,
                         comm, &inter_send_reqs[jfan_slot]));
             }
-        }
+ANOTHER_BARRIER;
 
-
-        /* complete previous inter-node send */
-        int prev_slot = jloop - fanout;
-        if (use_isend && prev_slot > 0 && inter_send_reqs[prev_slot] != MPI_REQUEST_NULL) {
-            /* we cannot fill for our next send until the previous send using this buffer is completed. */
-            int jfan_slot = jloop % fanout;
-            ompi_request_wait(&inter_send_reqs[jfan_slot], MPI_STATUS_IGNORE);
-            inter_send_reqs[jfan_slot] = MPI_REQUEST_NULL;
         }
     }
+ANOTHER_BARRIER;
 
     /* wait for all irecv to complete */
     ompi_request_wait_all(inter_recv_count, inter_recv_reqs, MPI_STATUS_IGNORE);
+ANOTHER_BARRIER;
 
 cleanup:
     for (int jlow=0; jlow<low_size; jlow++) {
