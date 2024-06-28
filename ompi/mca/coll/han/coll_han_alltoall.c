@@ -75,9 +75,12 @@ int mca_coll_han_alltoall_disqualified(
                                             comm, han_module->previous_alltoall_module);
 }
 
-#define SLEEP_HERE {if(w_rank==0) usleep(50);}
-//#define ANOTHER_BARRIER {opal_atomic_mb(); low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);opal_atomic_mb();}
-#define ANOTHER_BARRIER {opal_atomic_mb(); comm->c_coll->coll_barrier(comm, comm->c_coll->coll_barrier_module);opal_atomic_mb();}
+// #define SLEEP_HERE {if(w_rank==0) usleep(50);}
+#define SLEEP_HERE {}
+// #define ANOTHER_BARRIER {opal_atomic_mb(); low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);opal_atomic_mb();}
+// #define ANOTHER_BARRIER {opal_atomic_mb(); comm->c_coll->coll_barrier(comm, comm->c_coll->coll_barrier_module);opal_atomic_mb();}
+// #define ANOTHER_BARRIER {opal_atomic_mb();}
+#define ANOTHER_BARRIER {}
 
 
 int mca_coll_han_alltoall_using_smsc(
@@ -88,6 +91,26 @@ int mca_coll_han_alltoall_using_smsc(
         struct ompi_communicator_t *comm,
         mca_coll_base_module_t *module)
 {
+
+#if COLL_HAN_ALLTOALL_DEBUG
+    {
+        static int attach_done=0;
+        if (attach_done) goto resume;
+        char *dbg_rank = getenv("DEBUG_RANK");
+        if (!dbg_rank) goto resume;
+        if (atoi(dbg_rank) != ompi_comm_rank(MPI_COMM_WORLD)) goto resume;
+        volatile int i = 0;
+        char hostname[256];
+        sleep(1);
+        gethostname(hostname, sizeof(hostname));
+        printf("PID %d on %s ready for attach\n", getpid(), hostname);
+        fflush(stdout);
+        while (0 == i) {
+            sleep(1);
+        }
+resume: attach_done = 1;
+    }
+#endif
 
     mca_coll_han_module_t *han_module = (mca_coll_han_module_t *)module;
 
@@ -131,7 +154,7 @@ int mca_coll_han_alltoall_using_smsc(
     int rc, send_needs_bounce, ii_push_data;
     size_t sndsize;
     MPI_Aint sextent, rextent, lb;
-    volatile char *send_bounce;
+    char *send_bounce;
     opal_convertor_t convertor;
     size_t packed_size = 0, packed_size_tmp;
     int use_isend;
@@ -210,7 +233,7 @@ int mca_coll_han_alltoall_using_smsc(
     int64_t send_bytes_per_fan = low_size * packed_size;
     inter_send_reqs = malloc(sizeof(*inter_send_reqs) * fanout);
     inter_recv_reqs = malloc(sizeof(*inter_recv_reqs) * up_size );
-    volatile char **low_bufs = malloc(low_size * sizeof(*low_bufs));
+    char **low_bufs = malloc(low_size * sizeof(*low_bufs));
     void **sbuf_map_ctx = malloc(low_size * sizeof(&sbuf_map_ctx));
 
     const int nptrs_gather = 3;
@@ -313,13 +336,12 @@ ANOTHER_BARRIER;
             int jfan_slot = jloop % fanout;
             ompi_request_wait(&inter_send_reqs[jfan_slot], MPI_STATUS_IGNORE);
 ANOTHER_BARRIER;
-            // if (ii_push_data && jloop < up_size) {
-                // opal_atomic_mb();
-                // /*  barrier here: followers know all leaders have completed
-                //     previous isend for this slot, and may begin overwriting bounce slot. */
-                // low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
-                // SLEEP_HERE;
-            // }
+            if (ii_push_data ) {
+                /*  barrier here: followers know all leaders have completed
+                    previous isend for this slot, and may begin overwriting bounce slot. */
+                low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
+                SLEEP_HERE;
+            }
         }
 ANOTHER_BARRIER;
 
@@ -399,7 +421,6 @@ ANOTHER_BARRIER;
             if (ii_push_data) {
                 /* barrier here: leaders know all followers have filled data,
                    and can issue send. */
-                opal_atomic_mb();
                 low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
                 SLEEP_HERE;
             }
@@ -432,7 +453,6 @@ ANOTHER_BARRIER;
                         MCA_COLL_BASE_TAG_ALLTOALL, MCA_PML_BASE_SEND_STANDARD,
                         comm) );
             } else {
-                low_comm->c_coll->coll_barrier(low_comm, low_comm->c_coll->coll_barrier_module);
                 /* send the data to our remote partner */
                 MCA_PML_CALL(isend
                         (&send_bounce[send_bytes_per_fan*jfan_slot],
