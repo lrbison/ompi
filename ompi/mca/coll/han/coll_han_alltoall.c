@@ -308,7 +308,7 @@ ANOTHER_BARRIER;
 
         /* complete previous inter-node send */
         int prev_slot = jloop - fanout;
-        if (use_isend && prev_slot > 0 ) {
+        if (use_isend && prev_slot >= 0 ) {
             /* we cannot fill for our next send until the previous send using this buffer is completed. */
             int jfan_slot = jloop % fanout;
             ompi_request_wait(&inter_send_reqs[jfan_slot], MPI_STATUS_IGNORE);
